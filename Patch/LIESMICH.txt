@@ -1,0 +1,34 @@
+Binaer-Patches fuer DSA 3: Schatten ueber Riva (ohne Compiler)
+==============================================================
+
+In diesem Ordner liegen die kompakten Differenzdateien (*.ndp, Format NDP2),
+mit denen ohne Compiler und (unter Windows) ohne Python direkt aus der eigenen
+deutschen Original-RIVA.EXE (GOG-Version V1.12, 2.477.899 Bytes,
+MD5 fb8f5fc3ba5454c7344c17aaf362de35) die beiden fehlerbereinigten Fassungen
+erzeugt werden:
+
+  RIVA_FIX_WICHTIG.ndp (152.219 Bytes / ca. 149 KB)
+    -> erzeugt Build\RIVA_FIX_WICHTIG.EXE (2.507.083 Bytes, MD5 8e1fb73fcf6cad374aa6d4076f13a64d)
+       Stufe A (empfohlen, Testversion): behebt 31 sichere Original-Bugs (davon 2 Exploits)
+
+  RIVA_FIX_ALLES.ndp   (167.703 Bytes / ca. 164 KB)
+    -> erzeugt Build\RIVA_FIX_ALLES.EXE   (2.507.083 Bytes, MD5 d8dba0e2ecb2ced9b380ea708b8be25f)
+       Stufe B (Testversion): alle 52 Korrekturen (31 Stufe A + 21 Stufe B)
+
+Anwendung:
+  - Unter Windows (ohne Python): Doppelklick auf PATCHEN.bat im Hauptordner
+    (ruft Patch\patchen.ps1 per PowerShell auf).
+  - Unter Linux / plattformunabhaengig: ./Linux/patchen.sh
+    (ruft Patch/patchen.py mit Python 3 auf).
+
+Beide Patch-Skripte pruefen vor dem Patchen die Groesse und MD5-Pruefsumme der
+Original-RIVA.EXE sowie nach dem Patchen die MD5-Pruefsumme der erzeugten
+Zieldateien und brechen bei Abweichungen mit einer klaren deutschen Meldung ab.
+
+Technik & Urheberrecht (Format NDP2):
+  Die Patches nutzen Kopierbloecke aus der Original-EXE, spuerbare Nicht-Null-
+  Additionsdifferenzen fuer verschobene rel32-Sprungziele/Fixups sowie kurze
+  Literale fuer neuen Fix-Code (komprimiert per Raw-Deflate). Kein einziges
+  64-Byte-Fenster der unkomprimierten Literal- oder Additionsdaten kommt in
+  der Original-RIVA.EXE vor (pruefbar mit Werkzeuge/pruefe_patch_rechte.py).
+  Neu erzeugt werden die .ndp-Dateien bei Bedarf ueber Werkzeuge/mkpatch.py.

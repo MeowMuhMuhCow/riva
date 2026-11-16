@@ -1,0 +1,25 @@
+Hier kommt deine eigene Original-RIVA.EXE hinein.
+
+Aus Urheberrechtsgruenden ist KEINE ausfuehrbare Spieldatei in diesem Paket
+enthalten. Bitte kopiere die Datei
+
+  RIVA.EXE
+
+aus deiner eigenen deutschen Installation von "DSA 3: Schatten ueber Riva"
+(GOG-Version "Realms of Arkania 3 - Shadows over Riva", Version 1.12 vom 05.05.1997)
+in diesen Ordner:
+
+  Original\RIVA.EXE
+
+Erwartete Eckdaten der unterstuetzten deutschen Version V1.12:
+  Groesse: 2.477.899 Bytes
+  MD5:     fb8f5fc3ba5454c7344c17aaf362de35
+
+Wofuer wird sie beim Bauen gebraucht?
+  1. Am Anfang von RIVA.EXE sitzt der gebundene 32-Bit-DOS-Extender
+     DOS/4GW Professional 2.00 (die ersten 232.804 Bytes, Offset 0x00000..0x38D63)
+     sowie der innere Linker-Stub STUB.EXE (11.408 Bytes ab Offset 0x38D64).
+     Das Bauskript uebernimmt diesen Vorspann aus deiner Original-EXE und
+     setzt ihn vor das frisch mit Watcom 10.6 kompilierte und gelinkte Programm.
+  2. Nach dem Linken vergleicht Bauen\bauen.py im Original-Modus alle
+     2.477.899 Bytes mit dieser Datei und bestaetigt die 100%ige Byte-Gleichheit.

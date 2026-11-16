@@ -1,0 +1,46 @@
+# ============================================================================
+# .gitignore - Schuetzt davor, versehentlich urheberrechtlich geschuetzte
+#              Originaldateien, Compiler-Binaries oder Build-Artefakte
+#              in ein Git-Repository aufzunehmen.
+# ============================================================================
+
+# --- NIEMALS einchecken: Original-EXE, Spieldaten & Compiler ---
+Original/*
+!Original/HIER_RIVA_EXE_REIN.txt
+
+Compiler/*
+!Compiler/HIER_COMPILER_REIN.txt
+
+# --- Build- und Arbeitsordner ---
+Build/
+_archiv*/
+SPIELPFAD.txt
+Linux/starten.conf
+
+# --- DOS-/Windows-Binaries und Zwischenprodukte ---
+*.EXE
+*.exe
+*.OBJ
+*.obj
+*.LIB
+*.lib
+*.MAP
+*.map
+*.SYM
+*.sym
+*.ERR
+*.err
+*.ALF
+*.alf
+*.INS
+*.ins
+*.GOG
+*.gog
+*.OGG
+*.ogg
+*.ISO
+*.iso
+
+# --- Python-Zwischendateien ---
+__pycache__/
+*.py[cod]

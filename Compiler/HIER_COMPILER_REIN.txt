@@ -1,0 +1,19 @@
+Hier kommt der historische Compiler Watcom C/C++ 10.6 hinein.
+
+Aus Urheberrechtsgruenden ist der Compiler NICHT in diesem Paket enthalten.
+Wenn du aus dem Quelltext eine eigene RIVA.EXE kompilieren moechtest,
+kopiere die folgenden Unterordner aus einer Installation von Watcom C/C++ 10.6
+hierher (oder den gesamten Watcom-Ordner):
+
+  Compiler\BINNT\   (enthaelt WPP386.EXE, WCC386.EXE, WASM.EXE fuer 32-Bit-Windows)
+  Compiler\BINW\    (enthaelt die Watcom-Kernprogramme inkl. WLINK.EXE, DOS4GW.EXE, WLSYSTEM.LNK)
+  Compiler\H\       (Standard-Header wie stdio.h, stdlib.h, string.h, dos.h sowie H\SYS\)
+
+Es ist egal, ob die Ordner direkt unter Compiler\ liegen oder noch in einem
+Unterordner (z.B. Compiler\WATCOM\BINNT\): Das Bauskript Bauen\bauen.py
+sucht WPP386.EXE, WCC386.EXE, WLINK.EXE und H\STDIO.H automatisch.
+
+Verwendete Compiler-Schalter fuer Schatten ueber Riva:
+  -4r -oneatx -zp1 -s
+  (32-Bit 486-Register-Aufrufkonvention, Optimierungspaket -oneatx,
+   1-Byte-Strukturpacking, keine Stack-Pruefung im Prolog)

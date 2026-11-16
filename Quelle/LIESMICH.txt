@@ -1,0 +1,22 @@
+Ordnerstruktur des rekonstruierten C/C++-Quelltexts von DSA 3: Schatten ueber Riva
+==================================================================================
+
+Dieser Ordner enthaelt den vollstaendigen, mit Watcom C/C++ 10.6 byte-identisch
+uebersetzbaren C/C++-Quelltext von RIVA.EXE (Version 1.12):
+
+  Quelle/inc/       Zentrale Schalter-Header fuer Bugfixes (R_FIX.H, r_fix.inc)
+                    und das optionale Live-Probenlog (R_PLOG.H) sowie die
+                    19 gemeinsamen Riva-Header (RIVAMEM.H, RIVAHERO.H, RIVAHAPI.H,
+                    RIVACTX.H, RIVACDAT.H, RIVAIMG.H, RIVAITEM.H, RIVAITEX.H,
+                    RIVAITBL.H, RIVAFILE.H, RIVASTRM.H, RIVAACE.H, RIVAMOUS.H,
+                    RIVAAIF.H, RIVATEXT.H, RIVAVECT.H, RIVA_HELD.H, RIVA_KOEPFE.H,
+                    RIVA_CLOBBER.H).
+
+  Quelle/cpp/       Die 571 aktiven C/C++-Uebersetzungseinheiten (*_P1.CPP) gemaess
+                    Analyse/Phase4/teile_alle.tsv (540 aus Quelle/cpp/p3/ und
+                    31 direkt aus Quelle/cpp/p1/ geloeste Einheiten).
+
+Hinweis zu den Assembler-/Daten-Basismodulen:
+  Die 8 handgeschriebenen Assembler-/Fremdcode-Ankerbereiche (Audio-/Miles-Treiber,
+  SVGA-/Blit-Kern, Watcom-Laufzeitkern) sowie die DGROUP-Datenobjekte und
+  Zuordnungstabellen liegen fuer den Bau bereit in Bauen/baustand.tgz.

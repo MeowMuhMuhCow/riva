@@ -1,0 +1,3 @@
+# Zeilenenden niemals durch Git umschreiben lassen:
+# Watcom C/C++ 10.6 und die DOS/Windows-Skripte erwarten stabile Bytes.
+* -text
