@@ -827,6 +827,12 @@ static uint64_t g_stat_sos_stream_reloads = 0;
 
 extern "C" void riva_write_audio_stats(void) {
     const char *al = getenv("RIVA_AUDIO_LOG");
+    riva_trace("[audio-log] ogg_nonzero_frames=%llu smk_nonzero_frames=%llu sos_nonzero_frames=%llu sos_stream_reloads=%llu ogg_last_track=%d ogg_vol=%d ogg_enabled=%d\n",
+               (unsigned long long)g_stat_ogg_nonzero_frames,
+               (unsigned long long)g_stat_smk_nonzero_frames,
+               (unsigned long long)g_stat_sos_nonzero_frames,
+               (unsigned long long)g_stat_sos_stream_reloads,
+               g_ogg_cur_track, g_ogg_vol, g_ogg_enabled);
     if (!al || al[0] != '1') return;
     FILE *fp = fopen("audio_stats.log", "w");
     if (!fp) return;
@@ -1081,9 +1087,17 @@ static void riva_audio_pump(void) {
     s_in_audio_pump = 0;
 }
 
+static int riva_audio_is_device_open(void) {
+    riva_audio_init_waveout();
+    const char *hl = getenv("RIVA_HEADLESS");
+    if (hl && hl[0] == '1') return 1;
+    return (g_hWaveOut != NULL) ? 1 : 0;
+}
+
 extern "C" int f_16886d(int a, int b) { (void)a; (void)b; return 0; }
 extern "C" int f_168944(int a)        { (void)a; return 0; }
 extern "C" int f_168faf(int a, int b) {
+    int audio_ok = riva_audio_is_device_open();
     if (a) {
         char *p1 = (char *)(uintptr_t)a;
         d_1af4c8[0] = p1;
@@ -1098,12 +1112,12 @@ extern "C" int f_168faf(int a, int b) {
         *(int *)(p1 + 0x14)  = 0x20;
         *(int *)(p1 + 0x18)  = 60;
         *(int *)(p1 + 0x108) = (int)(uintptr_t)&f_169845;
-        *(unsigned char *)p1 = 1;
+        *(unsigned char *)p1 = (unsigned char)audio_ok;
         *(int *)(p1 - 100 + 4) = 1; /* II(4) = 1: Timer-System bereit */
-        *(int *)(p1 - 100 + 8) = 1; /* II(8) = 1: Digital-Soundtreiber bereit */
+        *(int *)(p1 - 100 + 8) = audio_ok ? 1 : 0; /* II(8): Digital-Soundtreiber nur bei offenem Audiogeraet 1 */
     }
     if (b) *(int *)(uintptr_t)b = 0;
-    return 0;
+    return audio_ok ? 0 : 1;
 }
 extern "C" int f_169412(int a, int b, int c) {
     (void)b; (void)c;
@@ -1584,8 +1598,13 @@ extern "C" void *f_14bb40(int a1, int a2, int a3) {
     for (int i = 0; i < MAX_ACTIVE_SMKS; ++i) {
         if (!g_active_smks[i]) { g_active_smks[i] = smk; break; }
     }
-    riva_trace("[smacker] opened %ux%u frames=%u rate=%d fd=%d\n",
-               (unsigned)smk->Width, (unsigned)smk->Height, (unsigned)smk->Frames, (int)smk->FrameRate, fd);
+    riva_trace("[smacker] opened %ux%u frames=%u rate=%d aud0=0x%08X (%u Hz, %s, %s, %s) fd=%d\n",
+               (unsigned)smk->Width, (unsigned)smk->Height, (unsigned)smk->Frames, (int)smk->FrameRate,
+               (unsigned)smk->AudioRate[0], (unsigned)(smk->AudioRate[0] & 0xFFFFFFu),
+               (smk->AudioRate[0] & 0x20000000u) ? "16bit" : "8bit",
+               (smk->AudioRate[0] & 0x10000000u) ? "stereo" : "mono",
+               (smk->AudioRate[0] & 0x80000000u) ? "comp" : "pcm",
+               fd);
     return smk;
 }
 
@@ -1924,6 +1943,14 @@ static void gog_iso_init(void) {
         snprintf(iso_path, sizeof(iso_path), "%s\\..\\game.gog", game_dir);
         g_iso_fp = fopen(iso_path, "rb");
     }
+    if (!g_iso_fp) {
+        snprintf(iso_path, sizeof(iso_path), "%s\\DATA\\game.gog", game_dir);
+        g_iso_fp = fopen(iso_path, "rb");
+    }
+    if (!g_iso_fp) {
+        snprintf(iso_path, sizeof(iso_path), "%s\\CD\\game.gog", game_dir);
+        g_iso_fp = fopen(iso_path, "rb");
+    }
     if (!g_iso_fp) return;
 
     /* Pruefe Mode-2/2352 (Offset 24) vs. Standard-ISO 2048 (Offset 0) */
@@ -2008,6 +2035,10 @@ static int gog_iso_open(const char *dos_path) {
     g_iso_fds[slot].lba  = g_iso_files[idx].lba;
     g_iso_fds[slot].size = g_iso_files[idx].size;
     g_iso_fds[slot].pos  = 0;
+    riva_trace("[gog_iso] Geoeffnet '%s' -> ISO:'%s' (LBA=%u, %u Bytes) => fd=%d\n",
+               dos_path, g_iso_files[idx].rel_path,
+               (unsigned)g_iso_files[idx].lba, (unsigned)g_iso_files[idx].size,
+               GOG_ISO_FD_BASE + slot);
     return GOG_ISO_FD_BASE + slot;
 }
 
@@ -2050,6 +2081,24 @@ static long gog_iso_lseek(int fd, long offset, int whence) {
     return (long)f->pos;
 }
 
+static void redirect_write_to_savedir_if_needed(char *resolved, size_t resolved_size) {
+    if (!dsa_platform_is_save_dir_redirected()) return;
+    const char *gd = dsa_platform_get_game_dir();
+    const char *sd = dsa_platform_get_save_dir();
+    if (!gd || !gd[0] || !sd || !sd[0]) return;
+    size_t gd_len = strlen(gd);
+    if (_strnicmp(resolved, gd, gd_len) == 0 && (resolved[gd_len] == '\\' || resolved[gd_len] == '/')) {
+        const char *sub = resolved + gd_len + 1;
+        char tmp[600];
+        if (_strnicmp(sub, "DATA\\", 5) == 0 || _strnicmp(sub, "DATA/", 5) == 0) {
+            sub += 5;
+        }
+        snprintf(tmp, sizeof(tmp), "%s\\%s", sd, sub);
+        strncpy(resolved, tmp, resolved_size - 1);
+        resolved[resolved_size - 1] = '\0';
+    }
+}
+
 extern "C" int f_144fbf(const char *path, int oflag, ...) {
     char resolved[600];
     int win_flags = _O_BINARY;
@@ -2065,6 +2114,10 @@ extern "C" int f_144fbf(const char *path, int oflag, ...) {
     if (oflag & 0x0020) win_flags |= _O_CREAT;
     if (oflag & 0x0040) win_flags |= _O_TRUNC;
 
+    if ((oflag & 3) != 0 || (oflag & 0x0060) != 0) {
+        redirect_write_to_savedir_if_needed(resolved, sizeof(resolved));
+    }
+
     fd = _open(resolved, win_flags, _S_IREAD | _S_IWRITE);
     if (fd == -1 && (oflag & 3) == 0) {
         fd = gog_iso_open(path);
@@ -2077,6 +2130,7 @@ extern "C" int f_14d0d7(const char *path, int pmode) {
     char resolved[600];
     (void)pmode;
     dsa_platform_resolve_path(path, resolved, sizeof(resolved));
+    redirect_write_to_savedir_if_needed(resolved, sizeof(resolved));
     return _open(resolved, _O_BINARY | _O_CREAT | _O_TRUNC | _O_RDWR, _S_IREAD | _S_IWRITE);
 }
 
@@ -3042,8 +3096,24 @@ extern "C" int f_169c99(void *ctx_ptr) {
     return comp_len;
 }
 
+extern "C" char d_1c2edc[];
+extern "C" int  d_1bfad0;
 extern "C" int f_165e06(int a)      { (void)a; return 0; }
-extern "C" int f_165e20(int a, int b) { (void)a; (void)b; return 0; }
+extern "C" int f_165e20(int a, int b) {
+    (void)a; (void)b;
+    /* Nur wenn das Audiogeraet tatsaechlich geoeffnet werden konnte (riva_audio_is_device_open() == 1),
+     * II(8) und d_1bfad0 = 1 sicherstellen (falls z. B. HMISET.CFG fehlte); sonst wie im Original 0. */
+    if (riva_audio_is_device_open()) {
+        if (*(int *)(d_1c2edc + 8) == 0) {
+            f_168faf((int)(uintptr_t)(d_1c2edc + 100), (int)(uintptr_t)(d_1c2edc + 0x172));
+        }
+        d_1bfad0 = (*(int *)(d_1c2edc + 8) != 0) ? 1 : 0;
+    } else {
+        *(int *)(d_1c2edc + 8) = 0;
+        d_1bfad0 = 0;
+    }
+    return 0;
+}
 extern "C" int f_16657c(const char *msg, int code) {
     if (msg) fprintf(stderr, "[Riva] %s\n", msg);
     return code;
@@ -3815,6 +3885,14 @@ int main(int argc, char **argv) {
             gamedir = argv[++i];
         } else if (strncmp(argv[i], "--gamedir=", 10) == 0) {
             gamedir = argv[i] + 10;
+        } else if ((strcmp(argv[i], "--savedir") == 0 || strcmp(argv[i], "--save-dir") == 0) && i + 1 < argc) {
+            const char *sd = argv[++i];
+            dsa_platform_set_save_dir(sd);
+            { char env_buf[600]; snprintf(env_buf, sizeof(env_buf), "DSA_SAVE_DIR=%s", sd); _putenv(env_buf); }
+        } else if (strncmp(argv[i], "--savedir=", 10) == 0) {
+            const char *sd = argv[i] + 10;
+            dsa_platform_set_save_dir(sd);
+            { char env_buf[600]; snprintf(env_buf, sizeof(env_buf), "DSA_SAVE_DIR=%s", sd); _putenv(env_buf); }
         } else if (strcmp(argv[i], "--record") == 0 && i + 1 < argc) {
             record_arg = argv[++i];
         } else if (strncmp(argv[i], "--record=", 9) == 0) {
@@ -3825,6 +3903,41 @@ int main(int argc, char **argv) {
             replay_arg = argv[i] + 9;
         } else if (strcmp(argv[i], "--skip-intro") == 0 || strcmp(argv[i], "--kein-intro") == 0) {
             _putenv("RIVA_SKIP_INTRO=1");
+        } else if (strcmp(argv[i], "--intro") == 0) {
+            _putenv("RIVA_SKIP_INTRO=0");
+        } else if (strcmp(argv[i], "--vollbild") == 0 || strcmp(argv[i], "--fullscreen") == 0) {
+            _putenv("DSA_FULLSCREEN=1");
+            _putenv("DSA_FENSTER=vollbild");
+        } else if (strcmp(argv[i], "--fenstermodus") == 0 || strcmp(argv[i], "--windowed") == 0) {
+            _putenv("DSA_FULLSCREEN=0");
+        } else if (strncmp(argv[i], "--fenster=", 10) == 0) {
+            const char *val = argv[i] + 10;
+            char env_buf[64];
+            snprintf(env_buf, sizeof(env_buf), "DSA_FENSTER=%s", val);
+            _putenv(env_buf);
+            if (_stricmp(val, "vollbild") == 0 || _stricmp(val, "fullscreen") == 0) {
+                _putenv("DSA_FULLSCREEN=1");
+            } else {
+                _putenv("DSA_FULLSCREEN=0");
+            }
+        } else if (strcmp(argv[i], "--fenster") == 0 && i + 1 < argc) {
+            const char *val = argv[++i];
+            char env_buf[64];
+            snprintf(env_buf, sizeof(env_buf), "DSA_FENSTER=%s", val);
+            _putenv(env_buf);
+            if (_stricmp(val, "vollbild") == 0 || _stricmp(val, "fullscreen") == 0) {
+                _putenv("DSA_FULLSCREEN=1");
+            } else {
+                _putenv("DSA_FULLSCREEN=0");
+            }
+        } else if (strncmp(argv[i], "--skalierung=", 13) == 0) {
+            char env_buf[64];
+            snprintf(env_buf, sizeof(env_buf), "DSA_SKALIERUNG=%s", argv[i] + 13);
+            _putenv(env_buf);
+        } else if (strcmp(argv[i], "--skalierung") == 0 && i + 1 < argc) {
+            char env_buf[64];
+            snprintf(env_buf, sizeof(env_buf), "DSA_SKALIERUNG=%s", argv[++i]);
+            _putenv(env_buf);
         } else if (strcmp(argv[i], "--headless") == 0) {
             _putenv("RIVA_HEADLESS=1");
         } else if (strcmp(argv[i], "--abdeckung") == 0) {

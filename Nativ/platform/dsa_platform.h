@@ -35,6 +35,7 @@ int            dsa_platform_get_height(void);
 unsigned char *dsa_platform_get_vram(void);
 void           dsa_platform_present(void);
 void           dsa_platform_wait_vsync(void);
+void           dsa_platform_toggle_fullscreen(void);
 
 /* 256-Farben VGA-DAC-Palette (6-Bit-Komponenten 0..63) */
 void dsa_platform_set_palette_entry(int index, unsigned char r6, unsigned char g6, unsigned char b6);

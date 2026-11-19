@@ -39,11 +39,61 @@ static SDL_Window   *g_window   = NULL;
 static SDL_Renderer *g_renderer = NULL;
 static SDL_Texture  *g_texture  = NULL;
 
-static int      g_initialized    = 0;
-static int      g_dos_mode       = 0x13;
-static int      g_width          = 320;
-static int      g_height         = 200;
+static int      g_initialized     = 0;
+static int      g_dos_mode        = 0x13;
+static int      g_width           = 320;
+static int      g_height          = 200;
 static uint32_t g_last_present_ms = 0;
+
+/* Anzeige- und Skalierungsoptionen (DSA_FULLSCREEN, DSA_FENSTER, DSA_SKALIERUNG) */
+static int       g_fullscreen   = 0;
+static int       g_window_scale = 4; /* 2..5 -> 640x480 .. 1600x1200 (4:3) */
+static int       g_scaling_mode = 0; /* 0 = fuellend (Sharp-Bilinear 4:3), 1 = ganzzahlig (4:3) */
+static uint32_t *g_canvas_buf   = NULL;
+static int       g_canvas_cap   = 0;
+static int       g_canvas_tex_w = 0;
+static int       g_canvas_tex_h = 0;
+
+static void dsa_display_init_from_env(void) {
+    const char *fs_env  = getenv("DSA_FULLSCREEN");
+    const char *win_env = getenv("DSA_FENSTER");
+    const char *sk_env  = getenv("DSA_SKALIERUNG");
+    const char *res_env = getenv("DSA_TEST_FS_RES");
+
+    if (fs_env && (fs_env[0] == '1' || _stricmp(fs_env, "true") == 0 || _stricmp(fs_env, "vollbild") == 0)) {
+        g_fullscreen = 1;
+    }
+    if (win_env && win_env[0]) {
+        if (_stricmp(win_env, "vollbild") == 0 || _stricmp(win_env, "fullscreen") == 0) {
+            g_fullscreen = 1;
+        } else {
+            int s = atoi(win_env);
+            if (s >= 2 && s <= 5) {
+                g_window_scale = s;
+                if (!fs_env || fs_env[0] != '1') g_fullscreen = 0;
+            }
+        }
+    }
+    if (sk_env && sk_env[0]) {
+        if (_stricmp(sk_env, "ganzzahlig") == 0 || _stricmp(sk_env, "integer") == 0 || _stricmp(sk_env, "pixel") == 0) {
+            g_scaling_mode = 1;
+        } else {
+            g_scaling_mode = 0;
+        }
+    }
+    if (res_env && res_env[0]) {
+        int rw = 0, rh = 0;
+        if (sscanf(res_env, "%dx%d", &rw, &rh) == 2 && rw >= 320 && rh >= 200) {
+            SDL_SetFullscreenOverrideRes(rw, rh);
+        }
+    }
+}
+
+void dsa_platform_toggle_fullscreen(void) {
+    if (!g_window) return;
+    g_fullscreen = !g_fullscreen;
+    SDL_SetWindowFullscreen(g_window, g_fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+}
 
 /* =========================================================================
  * 2. Maus- und Tastaturzustand
@@ -655,10 +705,35 @@ static void init_exe_dir_once(void) {
     strcpy(g_exe_dir, ".");
 }
 
+static int contains_nocase(const char *haystack, const char *needle) {
+    if (!haystack || !needle || !needle[0]) return 0;
+    size_t nlen = strlen(needle);
+    for (const char *p = haystack; *p; ++p) {
+        if (_strnicmp(p, needle, nlen) == 0) return 1;
+    }
+    return 0;
+}
+
+static int is_protected_gog_gamedir(const char *dir_path) {
+    if (!dir_path || !dir_path[0]) return 0;
+    if (contains_nocase(dir_path, "Program Files") ||
+        contains_nocase(dir_path, "GOG Galaxy") ||
+        contains_nocase(dir_path, "GOG Games")) {
+        return 1;
+    }
+    return 0;
+}
+
 static int is_dir_writable(const char *dir_path) {
     if (!dir_path || !dir_path[0]) return 0;
     const char *force_ro = getenv("DSA_FORCE_READONLY_GAMEDIR");
     if (force_ro && force_ro[0] == '1') return 0;
+    /* Automatische Tests und Replays duerfen NIE in einen echten GOG-Installationsordner schreiben! */
+    if ((g_replay_active || (getenv("RIVA_HEADLESS") && getenv("RIVA_HEADLESS")[0] == '1') ||
+         (getenv("RIVA_PORT_AUTOTEST") && getenv("RIVA_PORT_AUTOTEST")[0] == '1')) &&
+        is_protected_gog_gamedir(dir_path)) {
+        return 0;
+    }
     char test_path[600];
 #ifdef _WIN32
     snprintf(test_path, sizeof(test_path), "%s\\.riva_wtest_%lu.tmp", dir_path, (unsigned long)GetCurrentProcessId());
@@ -738,7 +813,11 @@ static void setup_save_dir(void) {
         g_save_dir[sizeof(g_save_dir) - 1] = '\0';
         g_save_dir_redirected = 0;
     } else {
-        snprintf(g_save_dir, sizeof(g_save_dir), "%s\\Spielstaende", g_exe_dir);
+        if (g_replay_active && g_replay_dir[0]) {
+            snprintf(g_save_dir, sizeof(g_save_dir), "%s\\Spielstaende", g_replay_dir);
+        } else {
+            snprintf(g_save_dir, sizeof(g_save_dir), "%s\\Spielstaende", g_exe_dir);
+        }
         g_save_dir_redirected = 1;
     }
 
@@ -945,18 +1024,31 @@ const char *dsa_platform_resolve_path(const char *dos_path, char *out_buf, size_
     }
 
     /* 1. --kein-intro / --skip-intro (RIVA_SKIP_INTRO=1):
-     *    In zmain_P1.CPP (f_1439e0) wird das Intro genau dann uebersprungen, wenn
-     *    "..\\GAMES\\LASTGAME" und "..\\GAMES\\START.GAM" beide existieren und
-     *    unterschiedliche Dateigroessen haben. */
+     *    In zmain_P1.CPP (f_1439e0, Zeilen 550-556) wird das Intro genau dann uebersprungen,
+     *    wenn "C:\\RIVA\\DATA\\..\\GAMES\\LASTGAME" und "C:\\RIVA\\DATA\\..\\GAMES\\START.GAM"
+     *    beide existieren und unterschiedliche Dateigroessen haben.
+     *    WICHTIG: Direkt danach (zmain_P1.CPP:606) laedt f_05a910("..\\GAMES\\LASTGAME", "LASTGAME")
+     *    den Startspielstand! Daher darf GAMES\LASTGAME NIEMALS auf RIVA.EXE umgebogen werden;
+     *    stattdessen wird nur die Intro-Groessenpruefung auf "C:\\RIVA\\DATA\\..\\GAMES\\START.GAM"
+     *    auf RIVA.EXE umgeleitet (und ein fehlendes GAMES\LASTGAME auf GAMES\START.GAM abgebildet). */
     {
         const char *skip_intro = getenv("RIVA_SKIP_INTRO");
         if (skip_intro && skip_intro[0] == '1') {
             if (_stricmp(rel, "GAMES\\LASTGAME") == 0) {
-                snprintf(out_buf, out_size, "%s\\RIVA.EXE", g_game_dir);
+                const char *base = (g_save_dir_redirected && g_save_dir[0]) ? g_save_dir : g_game_dir;
+                snprintf(out_buf, out_size, "%s\\GAMES\\LASTGAME", base);
+                if (_access(out_buf, 0) != 0) {
+                    snprintf(out_buf, out_size, "%s\\GAMES\\LASTGAME", g_game_dir);
+                }
+                if (_access(out_buf, 0) != 0) {
+                    snprintf(out_buf, out_size, "%s\\GAMES\\START.GAM", g_game_dir);
+                }
                 return out_buf;
             }
-            if (_stricmp(rel, "GAMES\\START.GAM") == 0) {
-                snprintf(out_buf, out_size, "%s\\GAMES\\START.GAM", g_game_dir);
+            if (_stricmp(rel, "GAMES\\START.GAM") == 0 &&
+                dos_path && (_strnicmp(dos_path, "C:\\RIVA\\DATA\\..\\", 16) == 0 ||
+                             _strnicmp(dos_path, "C:/RIVA/DATA/../", 16) == 0)) {
+                snprintf(out_buf, out_size, "%s\\RIVA.EXE", g_game_dir);
                 if (_access(out_buf, 0) != 0) {
                     snprintf(out_buf, out_size, "%s\\DATA\\RIVA.ALF", g_game_dir);
                 }
@@ -977,10 +1069,22 @@ const char *dsa_platform_resolve_path(const char *dos_path, char *out_buf, size_
     }
 
     /* 3. Schreibschutz-Umleitung (g_save_dir_redirected):
-     *    GAMES, TEMP, CTEMP und RIVA.CFG unter g_save_dir aufloesen. */
+     *    GAMES, TEMP, CTEMP, RIVA.CFG, GAMES.NAM, GAMES.TMP und aif.tmp unter g_save_dir aufloesen. */
     if (g_save_dir_redirected && g_save_dir[0]) {
         if (_stricmp(rel, "RIVA.CFG") == 0 || _stricmp(rel, "DATA\\RIVA.CFG") == 0) {
             snprintf(out_buf, out_size, "%s\\RIVA.CFG", g_save_dir);
+            return out_buf;
+        }
+        if (_stricmp(rel, "GAMES.NAM") == 0 || _stricmp(rel, "DATA\\GAMES.NAM") == 0) {
+            snprintf(out_buf, out_size, "%s\\GAMES.NAM", g_save_dir);
+            return out_buf;
+        }
+        if (_stricmp(rel, "GAMES.TMP") == 0 || _stricmp(rel, "DATA\\GAMES.TMP") == 0) {
+            snprintf(out_buf, out_size, "%s\\GAMES.TMP", g_save_dir);
+            return out_buf;
+        }
+        if (_stricmp(rel, "aif.tmp") == 0 || _stricmp(rel, "DATA\\aif.tmp") == 0) {
+            snprintf(out_buf, out_size, "%s\\TEMP\\aif.tmp", g_save_dir);
             return out_buf;
         }
         if (_stricmp(rel, "GAMES") == 0 || _strnicmp(rel, "GAMES\\", 6) == 0 ||
@@ -1031,7 +1135,8 @@ static void rebuild_palette_argb(int idx) {
 }
 
 int dsa_platform_init(const char *window_title, int width, int height, const char *game_dir) {
-    int i;
+    int i, win_w, win_h;
+    Uint32 win_flags;
     if (game_dir && game_dir[0]) {
         dsa_platform_set_game_dir(game_dir);
     } else if (!g_game_dir[0]) {
@@ -1044,26 +1149,36 @@ int dsa_platform_init(const char *window_title, int width, int height, const cha
         return -1;
     }
 
+    dsa_display_init_from_env();
+
     if (width <= 0)  width  = 320;
     if (height <= 0) height = 200;
     g_width  = width;
     g_height = height;
 
-    /* Fenster in 960x600 (3x fuer 320x200, 1.5x fuer 640x400) bzw. 960x720 anlegen */
+    /* 4:3-Fenster (320*scale x 240*scale, Standard 4x = 1280x960) bzw. Vollbild anlegen */
     {
         const char *hl = getenv("RIVA_HEADLESS");
-        Uint32 win_flags = (hl && hl[0] == '1') ? SDL_WINDOW_HIDDEN : (SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+        int is_hl = (hl && hl[0] == '1') ? 1 : 0;
+        win_w = 320 * g_window_scale;
+        win_h = 240 * g_window_scale;
+        win_flags = is_hl ? SDL_WINDOW_HIDDEN : (SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+        if (g_fullscreen) {
+            win_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+        }
         g_window = SDL_CreateWindow(
             window_title ? window_title : "DSA 3: Schatten ueber Riva (Windows Port)",
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-            960, 600,
+            win_w, win_h,
             win_flags
         );
     }
     g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
     SDL_RenderSetLogicalSize(g_renderer, g_width, g_height);
+    g_canvas_tex_w = win_w;
+    g_canvas_tex_h = win_h;
     g_texture = SDL_CreateTexture(
-        g_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, g_width, g_height
+        g_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, g_canvas_tex_w, g_canvas_tex_h
     );
 
     /* System-Mauszeiger im Spielfenster ausblenden, da Riva seinen eigenen Software-Cursor zeichnet */
@@ -1089,6 +1204,7 @@ void dsa_platform_shutdown(void) {
     riva_write_audio_stats();
     if (g_record_fp) { fclose(g_record_fp); g_record_fp = NULL; }
     if (!g_initialized) return;
+    if (g_canvas_buf) { free(g_canvas_buf); g_canvas_buf = NULL; g_canvas_cap = 0; }
     if (g_texture)  { SDL_DestroyTexture(g_texture);   g_texture  = NULL; }
     if (g_renderer) { SDL_DestroyRenderer(g_renderer); g_renderer = NULL; }
     if (g_window)   { SDL_DestroyWindow(g_window);     g_window   = NULL; }
@@ -1109,14 +1225,10 @@ void dsa_platform_set_mode(int dos_mode, int width, int height) {
     if (width > DSA_MAX_VRAM_WIDTH)   width  = DSA_MAX_VRAM_WIDTH;
     if (height > DSA_MAX_VRAM_HEIGHT) height = DSA_MAX_VRAM_HEIGHT;
 
-    if (width != g_width || height != g_height || !g_texture) {
+    if (width != g_width || height != g_height) {
         g_width  = width;
         g_height = height;
-        if (g_texture) SDL_DestroyTexture(g_texture);
         SDL_RenderSetLogicalSize(g_renderer, g_width, g_height);
-        g_texture = SDL_CreateTexture(
-            g_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, g_width, g_height
-        );
     }
     g_mouse_max_x = g_width - 1;
     g_mouse_max_y = g_height - 1;
@@ -1222,6 +1334,12 @@ static void poll_sdl_events_internal(void) {
                 dos_sc = sdl_scancode_to_dos(ev.key.keysym.scancode, ev.key.keysym.sym, mod, &ascii);
             }
 
+            /* Alt+Enter: Vollbild/Fenstermodus umschalten */
+            if (down && !ev.key.repeat && (mod & KMOD_ALT) && (dos_sc == 0x1C || ev.key.keysym.sym == 13)) {
+                dsa_platform_toggle_fullscreen();
+                break;
+            }
+
             if (dos_sc < 128) {
                 g_scancode_down[dos_sc] = down ? 1 : 0;
             }
@@ -1278,13 +1396,192 @@ static void dsa_save_bmp(const char *path) {
     fclose(fp);
 }
 
+static void dsa_save_canvas_bmp(const char *path, const uint32_t *argb, int w, int h) {
+    FILE *fp = fopen(path, "wb");
+    if (!fp || !argb || w <= 0 || h <= 0) {
+        if (fp) fclose(fp);
+        return;
+    }
+    uint32_t row_bytes = (uint32_t)((w * 3 + 3) & ~3);
+    uint32_t img_size = row_bytes * (uint32_t)h;
+    uint32_t file_size = 54 + img_size;
+    unsigned char hdr[54];
+    unsigned char pad[3] = {0, 0, 0};
+    int pad_len = (int)row_bytes - w * 3;
+    memset(hdr, 0, sizeof(hdr));
+    hdr[0] = 'B'; hdr[1] = 'M';
+    *(uint32_t *)(hdr + 2)  = file_size;
+    *(uint32_t *)(hdr + 10) = 54;
+    *(uint32_t *)(hdr + 14) = 40;
+    *(int32_t  *)(hdr + 18) = w;
+    *(int32_t  *)(hdr + 22) = -h;
+    *(uint16_t *)(hdr + 26) = 1;
+    *(uint16_t *)(hdr + 28) = 24;
+    *(uint32_t *)(hdr + 34) = img_size;
+    fwrite(hdr, 1, 54, fp);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            uint32_t c = argb[y * w + x];
+            unsigned char bgr[3] = {
+                (unsigned char)(c & 0xFF),
+                (unsigned char)((c >> 8) & 0xFF),
+                (unsigned char)((c >> 16) & 0xFF)
+            };
+            fwrite(bgr, 1, 3, fp);
+        }
+        if (pad_len > 0) fwrite(pad, 1, (size_t)pad_len, fp);
+    }
+    fclose(fp);
+}
+
+static void dsa_compute_viewport_4_3(int cw, int ch, int *out_vx, int *out_vy, int *out_vw, int *out_vh) {
+    int vx = 0, vy = 0, vw = cw, vh = ch;
+    if (cw <= 0) cw = 320;
+    if (ch <= 0) ch = 240;
+
+    if (g_scaling_mode == 1) {
+        /* Ganzzahlige 4:3-Skalierung: groesstes k >= 1 mit (320*k, 240*k) <= (cw, ch) */
+        int base_w = (g_width >= 640) ? 640 : 320;
+        int base_h = (g_width >= 640) ? 480 : 240;
+        int kx = cw / base_w;
+        int ky = ch / base_h;
+        int k  = (kx < ky) ? kx : ky;
+        if (k >= 1) {
+            vw = k * base_w;
+            vh = k * base_h;
+            vx = (cw - vw) / 2;
+            vy = (ch - vh) / 2;
+            *out_vx = vx; *out_vy = vy; *out_vw = vw; *out_vh = vh;
+            return;
+        }
+    }
+
+    /* 4:3 Vollbild-/Fenster-Einpassung mit Letterbox/Pillarbox */
+    if (cw * 3 <= ch * 4) {
+        vw = cw;
+        vh = (cw * 3 + 2) / 4;
+    } else {
+        vh = ch;
+        vw = (ch * 4 + 1) / 3;
+    }
+    if (vw <= 0) vw = 1;
+    if (vh <= 0) vh = 1;
+    vx = (cw - vw) / 2;
+    vy = (ch - vh) / 2;
+    *out_vx = vx; *out_vy = vy; *out_vw = vw; *out_vh = vh;
+}
+
+static void dsa_scale_4_3_canvas(int cw, int ch, int vx, int vy, int vw, int vh) {
+    int total_px = cw * ch;
+    if (total_px <= 0) return;
+    if (total_px > g_canvas_cap) {
+        uint32_t *nb = (uint32_t *)realloc(g_canvas_buf, (size_t)total_px * sizeof(uint32_t));
+        if (!nb) return;
+        g_canvas_buf = nb;
+        g_canvas_cap = total_px;
+    }
+    memset(g_canvas_buf, 0, (size_t)total_px * sizeof(uint32_t));
+    if (vw <= 0 || vh <= 0) return;
+
+    int src_w = (g_width > 0) ? g_width : 320;
+    int src_h = (g_height > 0) ? g_height : 200;
+
+    if (g_scaling_mode == 1) {
+        for (int dy = 0; dy < vh; ++dy) {
+            int sy = (dy * src_h) / vh;
+            if (sy >= src_h) sy = src_h - 1;
+            const uint32_t *srow = g_argb_buffer + sy * src_w;
+            uint32_t *drow = g_canvas_buf + (vy + dy) * cw + vx;
+            for (int dx = 0; dx < vw; ++dx) {
+                int sx = (dx * src_w) / vw;
+                if (sx >= src_w) sx = src_w - 1;
+                drow[dx] = srow[sx];
+            }
+        }
+        return;
+    }
+
+    /* F7 (2b): Scharfe pixelgetreue 4:3-Skalierung (Sharp-Bilinear / Sub-Texel-AA) */
+    int scale_x_fp = (vw << 8) / src_w;
+    int scale_y_fp = (vh << 8) / src_h;
+    if (scale_x_fp < 256) scale_x_fp = 256;
+    if (scale_y_fp < 256) scale_y_fp = 256;
+
+    for (int dy = 0; dy < vh; ++dy) {
+        int u_y = ((dy * 2 + 1) * src_h * 128) / vh - 128;
+        int sy0, sy1, wy;
+        if (u_y <= 0) {
+            sy0 = sy1 = 0; wy = 0;
+        } else if (u_y >= (src_h - 1) * 256) {
+            sy0 = sy1 = src_h - 1; wy = 0;
+        } else {
+            sy0 = u_y >> 8;
+            sy1 = sy0 + 1;
+            int fy = u_y & 255;
+            int dist = (fy < 128) ? (128 - fy) : (fy - 128);
+            int edge = (dist * scale_y_fp) >> 8;
+            if (edge >= 128) {
+                wy = (fy < 128) ? 0 : 256;
+            } else {
+                wy = (fy < 128) ? (128 - edge) : (128 + edge);
+            }
+        }
+        const uint32_t *srow0 = g_argb_buffer + sy0 * src_w;
+        const uint32_t *srow1 = g_argb_buffer + sy1 * src_w;
+        uint32_t *drow = g_canvas_buf + (vy + dy) * cw + vx;
+
+        for (int dx = 0; dx < vw; ++dx) {
+            int u_x = ((dx * 2 + 1) * src_w * 128) / vw - 128;
+            int sx0, sx1, wx;
+            if (u_x <= 0) {
+                sx0 = sx1 = 0; wx = 0;
+            } else if (u_x >= (src_w - 1) * 256) {
+                sx0 = sx1 = src_w - 1; wx = 0;
+            } else {
+                sx0 = u_x >> 8;
+                sx1 = sx0 + 1;
+                int fx = u_x & 255;
+                int dist = (fx < 128) ? (128 - fx) : (fx - 128);
+                int edge = (dist * scale_x_fp) >> 8;
+                if (edge >= 128) {
+                    wx = (fx < 128) ? 0 : 256;
+                } else {
+                    wx = (fx < 128) ? (128 - edge) : (128 + edge);
+                }
+            }
+
+            if (wx == 0 && wy == 0) {
+                drow[dx] = srow0[sx0];
+            } else if (wx == 256 && wy == 0) {
+                drow[dx] = srow0[sx1];
+            } else if (wx == 0 && wy == 256) {
+                drow[dx] = srow1[sx0];
+            } else if (wx == 256 && wy == 256) {
+                drow[dx] = srow1[sx1];
+            } else {
+                uint32_t c00 = srow0[sx0], c10 = srow0[sx1];
+                uint32_t c01 = srow1[sx0], c11 = srow1[sx1];
+                int w00 = (256 - wx) * (256 - wy);
+                int w10 = wx * (256 - wy);
+                int w01 = (256 - wx) * wy;
+                int w11 = wx * wy;
+                uint32_t r = (((c00 >> 16) & 0xFF) * w00 + ((c10 >> 16) & 0xFF) * w10 + ((c01 >> 16) & 0xFF) * w01 + ((c11 >> 16) & 0xFF) * w11) >> 16;
+                uint32_t g = (((c00 >>  8) & 0xFF) * w00 + ((c10 >>  8) & 0xFF) * w10 + ((c01 >>  8) & 0xFF) * w01 + ((c11 >>  8) & 0xFF) * w11) >> 16;
+                uint32_t b = (( c00        & 0xFF) * w00 + ( c10        & 0xFF) * w10 + ( c01        & 0xFF) * w01 + ( c11        & 0xFF) * w11) >> 16;
+                drow[dx] = 0xFF000000u | (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+}
+
 extern "C" unsigned char riva_dgroup_base[];
 
 void dsa_platform_present(void) {
     static int autotest_checked = 0;
     static int autotest_enabled = 0;
     static int autotest_stage = 0;
-    int total, i;
+    static int canvas_dumped = 0;
+    int total, i, cw = 0, ch = 0, vx = 0, vy = 0, vw = 0, vh = 0;
     if (!g_initialized) {
         dsa_platform_init(NULL, g_width, g_height, NULL);
     }
@@ -1299,7 +1596,36 @@ void dsa_platform_present(void) {
     for (i = 0; i < total; ++i) {
         g_argb_buffer[i] = g_pal_argb32[g_vram[i]];
     }
-    SDL_UpdateTexture(g_texture, NULL, g_argb_buffer, g_width * (int)sizeof(uint32_t));
+
+    SDL_GetWindowSize(g_window, &cw, &ch);
+    if (cw <= 0) cw = 320 * g_window_scale;
+    if (ch <= 0) ch = 240 * g_window_scale;
+
+    dsa_compute_viewport_4_3(cw, ch, &vx, &vy, &vw, &vh);
+    SDL_SetWindowViewport(g_window, vx, vy, vw, vh);
+    dsa_scale_4_3_canvas(cw, ch, vx, vy, vw, vh);
+
+    if (cw != g_canvas_tex_w || ch != g_canvas_tex_h || !g_texture) {
+        if (g_texture) SDL_DestroyTexture(g_texture);
+        g_canvas_tex_w = cw;
+        g_canvas_tex_h = ch;
+        g_texture = SDL_CreateTexture(
+            g_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, g_canvas_tex_w, g_canvas_tex_h
+        );
+    }
+
+    if (g_canvas_buf && g_texture) {
+        SDL_UpdateTexture(g_texture, NULL, g_canvas_buf, cw * (int)sizeof(uint32_t));
+    }
+
+    if (!canvas_dumped && g_canvas_buf) {
+        const char *dump_path = getenv("DSA_DUMP_CANVAS_BMP");
+        if (dump_path && dump_path[0] && SDL_GetTicks() >= 1500) {
+            dsa_save_canvas_bmp(dump_path, g_canvas_buf, cw, ch);
+            canvas_dumped = 1;
+        }
+    }
+
     SDL_RenderClear(g_renderer);
     SDL_RenderCopy(g_renderer, g_texture, NULL, NULL);
     SDL_RenderPresent(g_renderer);
