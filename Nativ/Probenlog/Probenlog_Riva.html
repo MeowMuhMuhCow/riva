@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Probenlog Schatten über Riva</title>
+<style>
+:root{--bg:#f6f3ec;--fg:#1f1d1a;--mut:#6b655c;--card:#fffdf8;--line:#e2dccf;--acc:#7a3b1d;--ok:#2f7a3a;--bad:#a8322b;--pz:#7b3fa0;--chip:#efe8da}
+@media (prefers-color-scheme:dark){:root{--bg:#191714;--fg:#ece6da;--mut:#a59d8f;--card:#22201c;--line:#38342d;--acc:#e0a070;--ok:#6fc27a;--bad:#ef7a70;--pz:#c59be0;--chip:#2c2924}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+header{padding:20px 16px 8px;max-width:1100px;margin:auto}h1{margin:0;font-size:22px;color:var(--acc)}header p{margin:4px 0 0;color:var(--mut)}
+main{max-width:1100px;margin:auto;padding:8px 16px 40px}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:18px;text-align:center;background:var(--card)}
+.drop.ueber{border-color:var(--acc)}button,label.knopf{background:var(--acc);color:var(--bg);border:0;border-radius:8px;padding:8px 14px;font:inherit;cursor:pointer;display:inline-block;margin:4px}
+button.leise{background:var(--chip);color:var(--fg)}input[type=file]{display:none}
+.reihe{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0}
+select,input[type=search]{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
+.karten{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:14px 0}
+.karte{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}.karte h3{margin:0 0 6px;font-size:15px}
+.zahl{font-size:26px;font-weight:600}.mut{color:var(--mut);font-size:13px}
+.balken{height:6px;background:var(--chip);border-radius:3px;overflow:hidden;margin:3px 0 8px}.balken i{display:block;height:100%;background:var(--ok)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:13px;color:var(--mut);font-weight:600}
+td.w{font-variant-numeric:tabular-nums;white-space:nowrap}.ok{color:var(--ok)}.bad{color:var(--bad)}.pz{color:var(--pz);font-weight:600}
+.tabwrap{overflow-x:auto}.leer{color:var(--mut);padding:24px;text-align:center}
+.stat td,.stat th{padding:4px 6px}details{margin:10px 0}summary{cursor:pointer;color:var(--acc);font-weight:600}
+</style>
+</head>
+<body>
+<header>
+<h1>Probenlog · Schatten über Riva</h1>
+<p>Jede Probe des Spiels mit allen Würfeln. Die Datei <b>PROBEN.CSV</b> wird von den Fix-Fassungen (<code>RIVA_PORT_WICHTIG.EXE</code> / <code>RIVA_PORT_ALLES.EXE</code>) im Spielordner bzw. unter <code>Spielstaende\PROBEN.CSV</code> angelegt. Alles bleibt auf deinem Rechner.</p>
+</header>
+<main>
+<div class="drop" id="drop">
+<div>PROBEN.CSV hierher ziehen oder</div>
+<label class="knopf">Datei wählen<input type="file" id="datei" accept=".csv,.CSV,text/plain"></label>
+<button id="live" class="leise" title="Nur Chrome/Edge: Datei einmal wählen, danach aktualisiert sich die Seite jede Sekunde">Live mitlesen</button>
+<div class="mut" id="status">Noch keine Datei geladen.</div>
+</div>
+<div id="inhalt" hidden>
+<div class="reihe">
+<select id="f_held"><option value="">alle Helden / Kämpfer</option></select>
+<select id="f_art"><option value="">alle Proben</option><option value="eig">Eigenschaftsproben</option><option value="tal">Talentproben</option><option value="zau">Zauberproben</option><option value="kampf">Kampf (AT/PA/FK)</option></select>
+<input type="search" id="f_text" placeholder="Suchen, z. B. Schlösser oder Fulminictus">
+</div>
+<div class="karten" id="karten"></div>
+<details open><summary>Talente und Zauber</summary><div class="tabwrap"><table class="stat" id="t_namen"></table></div></details>
+<h2 style="font-size:17px;margin:18px 0 8px">Alle Proben <span class="mut" id="anzahl"></span></h2>
+<div class="tabwrap"><table id="t_proben"><thead><tr><th>#</th><th>Wer</th><th>Probe</th><th>Würfe</th><th>Ergebnis</th></tr></thead><tbody></tbody></table></div>
+</div>
+</main>
+<script>
+const D = {
+  EIG: ["MU", "KL", "CH", "FF", "GE", "IN", "KK", "AG", "HA", "RA", "GG", "TA", "NG", "JZ"],
+  TALENT: [
+    "Waffenlos", "Hiebwaffen", "Stichwaffen", "Schwerter", "Äxte",
+    "Speere", "Zweihänder", "Schusswaffen", "Wurfwaffen", "Akrobatik",
+    "Klettern", "Körperbeherrschung", "Reiten", "Schleichen", "Schwimmen",
+    "Selbstbeherrschung", "Tanzen", "Verstecken", "Zechen", "Bekehren",
+    "Betören", "Feilschen", "Gassenwissen", "Lügen", "Menschenkenntnis",
+    "Schätzen", "Fährtensuchen", "Fesseln", "Orientierung", "Pflanzenkunde",
+    "Tierkunde", "Wildnisleben", "Alchimie", "Alte Sprachen", "Geographie",
+    "Geschichte", "Götter/Kulte", "Kriegskunst", "Lesen", "Magiekunde",
+    "Sprachen", "Abrichten", "Fahrzeuge", "Falschspiel", "Heilkunde Gift",
+    "Heilkunde Krankheiten", "Heilkunde Wunden", "Musizieren", "Schlösser", "Taschendiebstahl",
+    "Gefahreninstinkt", "Sinnesschärfe"
+  ],
+  ZAUBER: [
+    "-",
+    "Beherrschung brechen", "Destructibo", "Gardianum", "Illusionen zerstören", "Verwandlung beenden",
+    "Band und Fessel", "Bannbaladin", "Böser Blick", "Große Gier", "Große Verwirrung",
+    "Herr über das Tierreich", "Horriphobus", "Magischer Raub", "Respondami", "Sanftmut",
+    "Somnigravis", "Zwingtanz",
+    "Furor Blut", "Geister bannen", "Geister rufen", "Heptagon", "Krähenruf", "Skelettarius",
+    "Elementar beschwören", "Nihilogravo", "Solidirid",
+    "Axxeleratus", "Foramen", "Motoricus", "Spurlos", "Transversalis", "Über Eis",
+    "Balsam", "Hexenspeichel", "Klarum Purum", "Ruhe Körper", "Tiere heilen",
+    "Adleraug", "Analüs", "Eigenschaften seid gelesen", "Exposami", "Odem Arcanum", "Penetrizzel", "Sensibar",
+    "Chamaelioni", "Duplicatus", "Harmlose Gestalt", "Hexenknoten",
+    "Blitz dich find", "Ecliptifactus", "Eisenrost", "Fulminictus", "Ignifaxius", "Plumbumbarum", "Radau", "Saft Kraft", "Scharfes Auge",
+    "Hexenblick", "Nekropathia",
+    "Adler Wolf", "Arcano Psychostabilis", "Armatrutz", "CH steigern", "Feuerbann", "FF steigern", "GE steigern", "IN steigern", "KK steigern", "KL steigern", "MU steigern", "Mutabili", "Paralü", "Salander", "See und Fluss", "Visibili",
+    "Abvenenum", "Aeolitus", "Brenne toter Stoff", "Claudibus", "Dunkelheit", "Erstarre", "Flim Flam", "Schmelze", "Silentium", "Sturmgebrüll"
+  ]
+};
+const nm = (l, i) => (i >= 0 && i < l.length) ? l[i] : 'Nr. ' + i;
+const zus = z => z > 0 ? 'Mod +' + z : (z < 0 ? 'Mod ' + z : 'Mod 0');
+function decodeCp437(buf) {
+  const bytes = new Uint8Array(buf);
+  const map = {0x84:'ä',0x94:'ö',0x81:'ü',0x8e:'Ä',0x99:'Ö',0x9a:'Ü',0xe1:'ß'};
+  let s = '';
+  for (let i = 0; i < bytes.length; ++i) {
+    const b = bytes[i];
+    s += map[b] || String.fromCharCode(b);
+  }
+  return s;
+}
+function lies(text) {
+  const out = [];
+  let idx = 0;
+  for (const roh of text.split(/\r?\n/)) {
+    const f = roh.trim().split(';');
+    if (f.length < 6) continue;
+    const typ = f[0].trim();
+    const held = f[1].trim() || '(Held)';
+    const w = f.slice(2).filter(x => x !== '').map(Number);
+    let r = null;
+    if ((typ === 'T' || typ === 'Z') && w.length >= 13) {
+      const [nr, tw, mod, a1, v1, w1, a2, v2, w2, a3, v3, w3, erg] = w;
+      const isZ = typ === 'Z';
+      const name = isZ ? nm(D.ZAUBER, nr) : (nr < 0 ? 'Dreifachprobe' : nm(D.TALENT, nr));
+      const eig = `${nm(D.EIG, a1)} ${v1}/${nm(D.EIG, a2)} ${v2}/${nm(D.EIG, a3)} ${v3}`;
+      const ok = erg > 0;
+      const pz = erg <= -98 || erg === 99;
+      const ergText = erg === 99 ? 'Glücklich (Doppel-1!)' : (erg <= -98 ? 'Patzer (Doppel-20!)' : (erg > 0 ? `gelungen (+${erg - 1} übrig)` : 'misslungen'));
+      r = {nr: ++idx, held, typ: isZ ? 'zau' : 'tal', titel: `${name} (${isZ ? 'ZW' : 'TW'} ${tw})`, name2: name,
+           zusatz: `${eig}, ${zus(mod)}`, wuerfe: `${w1}, ${w2}, ${w3}`, ok, pz: erg <= -98, erg: ergText};
+    } else if (typ === 'A' && w.length >= 5) {
+      const [attr, wert, mod, wurf, erg] = w;
+      const e = nm(D.EIG, attr);
+      const ziel = wert - mod;
+      r = {nr: ++idx, held, typ: 'eig', titel: `${e}-Probe`, zusatz: `${e} ${wert}, ${zus(mod)}, Ziel ≤ ${ziel}`,
+           wuerfe: `W20 = ${wurf}`, ok: erg > 0, pz: erg <= -98, erg: erg <= -98 ? 'Patzer (20)' : (erg > 0 ? `gelungen (+${erg})` : `misslungen (${erg})`)};
+    } else if ((typ === 'AT' || typ === 'PA' || typ === 'FK') && w.length >= 4) {
+      const [ziel, mod, wurf, erg] = w;
+      const ergText = erg >= 2 ? 'Kritischer Treffer!' : (erg === 1 ? 'Gelungen' : (erg <= -1 ? 'Patzer!' : 'Fehl'));
+      r = {nr: ++idx, held, typ: 'kampf', kampf: typ, eigen: true, titel: `${typ}-Probe`,
+           zusatz: `Ziel ${ziel}, ${zus(mod)}`, wuerfe: `W20 = ${wurf}`, ok: erg >= 1, pz: erg <= -1, erg: ergText};
+    }
+    if (r) out.push(r);
+  }
+  return out;
+}
+let alle = [];
+const $ = id => document.getElementById(id);
+function proz(a, b) { return b ? Math.round(100 * a / b) + ' %' : '–'; }
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c])); }
+function zeige() {
+  const fh = $('f_held').value, fa = $('f_art').value, ft = $('f_text').value.toLowerCase();
+  const l = alle.filter(r => (!fh || r.held === fh) && (!fa || r.typ === fa) && (!ft || (r.titel + ' ' + r.zusatz + ' ' + r.held).toLowerCase().includes(ft)));
+  const tb = $('t_proben').querySelector('tbody'); tb.innerHTML = '';
+  for (const r of l.slice().reverse()) {
+    const tr = document.createElement('tr');
+    const kl = r.pz ? 'pz' : (r.ok === true ? 'ok' : (r.ok === false ? 'bad' : ''));
+    tr.innerHTML = `<td class="mut">${r.nr}</td><td>${esc(r.held)}</td><td>${esc(r.titel)}${r.zusatz ? ' <span class="mut">' + esc(r.zusatz) + '</span>' : ''}</td><td class="w">${esc(r.wuerfe)}</td><td class="${kl}">${esc(r.erg)}</td>`;
+    tb.appendChild(tr);
+  }
+  $('anzahl').textContent = `(${l.length}, neueste oben)`;
+  const held = {};
+  for (const r of l) {
+    const h = held[r.held] = held[r.held] || {n: 0, ok: 0, pz: 0, at: 0, atok: 0, pa: 0, paok: 0};
+    if (r.typ === 'kampf') {
+      if (r.kampf === 'PA') { h.pa++; if (r.ok) h.paok++; }
+      else { h.at++; if (r.ok) h.atok++; }
+    } else {
+      h.n++; if (r.ok) h.ok++; if (r.pz) h.pz++;
+    }
+  }
+  $('karten').innerHTML = Object.keys(held).sort().map(k => {
+    const h = held[k]; const p = h.n ? Math.round(100 * h.ok / h.n) : 0;
+    return `<div class="karte"><h3>${esc(k)}</h3><div class="zahl">${proz(h.ok, h.n)}</div><div class="mut">${h.ok} von ${h.n} Proben gelungen${h.pz ? ', ' + h.pz + ' Patzer' : ''}</div><div class="balken"><i style="width:${p}%"></i></div>`
+      + (h.at || h.pa ? `<div class="mut">AT/FK ${proz(h.atok, h.at)} (${h.atok}/${h.at}) · PA ${proz(h.paok, h.pa)} (${h.paok}/${h.pa})</div>` : '') + '</div>';
+  }).join('') || '<div class="leer">Keine Proben für diese Auswahl.</div>';
+  const nmz = {};
+  for (const r of l) {
+    if (!r.name2) continue;
+    const k = r.name2;
+    const s = nmz[k] = nmz[k] || {n: 0, ok: 0, pz: 0, typ: r.typ};
+    s.n++; if (r.ok) s.ok++; if (r.pz) s.pz++;
+  }
+  const keys = Object.keys(nmz).sort((a, b) => nmz[b].n - nmz[a].n);
+  $('t_namen').innerHTML = keys.length ? '<tr><th>Talent / Zauber</th><th>Proben</th><th>gelungen</th><th>Patzer</th></tr>' + keys.map(k => `<tr><td>${esc(k)} <span class="mut">${nmz[k].typ === 'zau' ? 'Zauber' : 'Talent'}</span></td><td>${nmz[k].n}</td><td>${proz(nmz[k].ok, nmz[k].n)}</td><td>${nmz[k].pz || ''}</td></tr>`).join('') : '<tr><td class="leer">Noch keine Talent- oder Zauberproben.</td></tr>';
+}
+function laden(text, quelle) {
+  alle = lies(text);
+  const sel = $('f_held'), alt = sel.value;
+  const helden = [...new Set(alle.map(r => r.held))].sort();
+  sel.innerHTML = '<option value="">alle Helden / Kämpfer</option>' + helden.map(h => `<option${h === alt ? ' selected' : ''}>${esc(h)}</option>`).join('');
+  $('inhalt').hidden = false; $('status').textContent = `${quelle}: ${alle.length} Proben.`; zeige();
+}
+$('datei').onchange = async e => { const f = e.target.files[0]; if (f) laden(decodeCp437(await f.arrayBuffer()), f.name); };
+const dz = $('drop');
+dz.ondragover = e => { e.preventDefault(); dz.classList.add('ueber'); };
+dz.ondragleave = () => dz.classList.remove('ueber');
+dz.ondrop = async e => { e.preventDefault(); dz.classList.remove('ueber'); const f = e.dataTransfer.files[0]; if (f) laden(decodeCp437(await f.arrayBuffer()), f.name); };
+let liveTimer = null, liveLen = -1;
+$('live').onclick = async () => {
+  if (!window.showOpenFilePicker) { $('status').textContent = 'Live mitlesen geht nur in Chrome oder Edge. Sonst einfach die Datei neu hineinziehen.'; return; }
+  try {
+    const [h] = await showOpenFilePicker({types: [{description: 'Probenlog', accept: {'text/csv': ['.csv', '.CSV']}}]});
+    clearInterval(liveTimer); liveLen = -1;
+    const tick = async () => { const f = await h.getFile(); if (f.size !== liveLen) { liveLen = f.size; laden(decodeCp437(await f.arrayBuffer()), f.name + ' (live)'); } };
+    await tick(); liveTimer = setInterval(tick, 1000);
+  } catch (e) {}
+};
+['f_held', 'f_art'].forEach(i => $(i).onchange = zeige); $('f_text').oninput = zeige;
+</script>
+</body>
+</html>
